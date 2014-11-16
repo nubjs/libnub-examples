@@ -137,21 +137,14 @@ static void after_read(uv_stream_t* handle,
     return;
   }
 
-  /**
-   * Scan for the letter Q which signals that we should quit the server.
-   * If we get QS it means close the stream.
-   */
+  /* Find the letter Q and the server will shutdown */
   if (!server_closed) {
     for (i = 0; i < nread; i++) {
       if (buf->base[i] == 'Q') {
-        if (i + 1 < nread && buf->base[i + 1] == 'S') {
-          free(buf->base);
-          uv_close((uv_handle_t*)handle, on_close);
-          return;
-        } else {
-          uv_close(server_handle, on_close);
-          server_closed = 1;
-        }
+        free(buf->base);
+        uv_close((uv_handle_t*)handle, on_close);
+        uv_close(server_handle, on_close);
+        return;
       }
     }
   }
@@ -199,7 +192,10 @@ static void on_close(uv_handle_t* peer) {
 /* Quick way to check the return value */
 static void check_error(int r, const char* msg) {
   if (r) {
-    fprintf(stderr, "%s: %i\n", msg, r);
+    if (0 > r)
+      fprintf(stderr, "%s: %s\n", msg, uv_strerror(r));
+    else
+      fprintf(stderr, "%s: %i\n", msg, r);
     abort();
   }
 }
