@@ -12,7 +12,7 @@ UV_DIR=${NUB_DIR}/deps/uv
 UV_BUILD=${NUB_BUILD}
 UV_IDIR=${UV_DIR}/include
 
-CFLAGS="-fno-omit-frame-pointer -Wall -g -fstrict-aliasing"
+CFLAGS="-pthread -fno-omit-frame-pointer -Wall -g -fstrict-aliasing"
 
 if [ ${BUILDTYPE} == Release ]
 then
@@ -26,8 +26,9 @@ fi
 DEPS=${NUB_BUILD}/libnub.a
 DEPS+=\ ${UV_BUILD}/libuv.a
 
-BUILDFILES=./tcp-echo.c
+BUILDFILES=tcp-echo.c
+BUILDFILES+=\ ${DEPS}
 
-INCLUDES=-I${NUB_IDIR}\ -I${UV_IDIR}
+INCLUDES=-I${NUB_IDIR}\ -I${UV_IDIR}\ -I${NUB_DIR}/deps/fuq
 
 ${CC} ${CFLAGS} -o ${OUTFILE} ${BUILDFILES} ${INCLUDES}
