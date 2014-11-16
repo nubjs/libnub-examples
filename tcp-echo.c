@@ -12,9 +12,6 @@ typedef struct {
   uv_buf_t buf;
 } write_req_t;
 
-/* Globals */
-static uv_tcp_t tcp_server;
-
 /* Forward declarations */
 static void tcp4_static_echo_server(int port, nub_loop_t* loop);
 static void on_connection(uv_stream_t* server, int status);
@@ -31,6 +28,7 @@ static void check_error(int r, const char* msg);
 /* Entry point */
 int main() {
   nub_loop_t loop;
+  int r;
 
   nub_loop_init(&loop);
 
@@ -38,29 +36,37 @@ int main() {
   tcp4_static_echo_server(PORT, &loop);
 
   /* Run the event loop using the libnub wrapper */
-  return nub_loop_run(&loop, UV_RUN_DEFAULT);
+  r = nub_loop_run(&loop, UV_RUN_DEFAULT);
+
+  nub_loop_dispose(&loop);
+
+  return r;
 }
 
 
 /* Start the TCP4 echo server */
 static void tcp4_static_echo_server(int port, nub_loop_t* loop) {
   struct sockaddr_in addr;
+  uv_tcp_t* tcp_server;
   int r;
 
   /* Basics for setting up TCP server */
   r = uv_ip4_addr("0.0.0.0", port, &addr);
   check_error(r, "uv_ip4_addr errored");
 
-  r = uv_tcp_init(&loop->uvloop, &tcp_server);
+  tcp_server = (uv_tcp_t*) malloc(sizeof(*tcp_server));
+  assert(NULL != tcp_server);
+
+  r = uv_tcp_init(&loop->uvloop, tcp_server);
   check_error(r, "socket creation error");
 
-  r = uv_tcp_bind(&tcp_server, (const struct sockaddr*) &addr, 0);
+  r = uv_tcp_bind(tcp_server, (const struct sockaddr*) &addr, 0);
   check_error(r, "bind error");
 
   /* Attach loop to server for later retrieval */
-  tcp_server.data = loop;
+  tcp_server->data = loop;
 
-  r = uv_listen((uv_stream_t*)&tcp_server, SOMAXCONN, on_connection);
+  r = uv_listen((uv_stream_t*)tcp_server, SOMAXCONN, on_connection);
   check_error(r, "listen error");
 
   fprintf(stderr, "Listening on 127.0.0.1:%i\n", port);
@@ -113,6 +119,8 @@ static void after_read(uv_stream_t* handle,
   int i;
   int r;
 
+  server_handle = (uv_handle_t*) handle->data;
+
   if (0 > nread) {
     /* Error or EOF. Free resources and close connection */
     assert(UV_EOF == nread);
@@ -129,8 +137,6 @@ static void after_read(uv_stream_t* handle,
     return;
   }
 
-  server_handle = (uv_handle_t*) handle->data;
-
   /**
    * Scan for the letter Q which signals that we should quit the server.
    * If we get QS it means close the stream.
@@ -143,7 +149,7 @@ static void after_read(uv_stream_t* handle,
           uv_close((uv_handle_t*)handle, on_close);
           return;
         } else {
-          uv_close(server_handle, NULL);
+          uv_close(server_handle, on_close);
           server_closed = 1;
         }
       }
