@@ -30,7 +30,6 @@ static void after_read(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
 static void thread_after_read(nub_thread_t* thread, void* arg);
 static void after_write(uv_write_t* req, int status);
 static void on_close(uv_handle_t* peer);
-/*static void after_shutdown(uv_shutdown_t* req, int status);*/
 static void check_error(int r, const char* msg);
 
 
@@ -129,43 +128,15 @@ static void echo_alloc(uv_handle_t* handle,
 static void after_read(uv_stream_t* handle,
                        ssize_t nread,
                        const uv_buf_t* buf) {
-  /*
-  nub_loop_t* loop;
-  nub_thread_t* thread;
-  uv_stream_t* server;
-  write_req_t* wr;
-  int r;
-
-  server = (uv_stream_t*) handle->data;
-  loop = (nub_loop_t*) server->data;
-  thread = (nub_thread_t*) loop->data;
-
-  if (0 > nread) {
-    free(buf->base);
-    uv_close((uv_handle_t*)handle, on_close);
-    uv_close((uv_handle_t*)server, on_close);
-    return;
-  }
-
-  if (0 == nread) {
-    free(buf->base);
-    nub_thread_push(thread, thread_after_read, buf->base);
-    return;
-  }
-
-  wr = (write_req_t*) malloc(sizeof(*wr));
-  check_error(NULL == wr, "allocation error");
-  wr->buf = uv_buf_init(buf->base, nread);
-
-  r = uv_write(&wr->req, handle, &wr->buf, 1, after_write);
-  check_error(r, "uv_write error");
-  */
-
   nub_thread_t* thread;
   after_write_t* nubuf;
 
-  thread = (nub_thread_t*) ((nub_loop_t*) ((uv_stream_t*) handle->data)->data)->data;
+  /* Oooh. So ugly, but I'm pretty lazy:P */
+  thread =
+      (nub_thread_t*) ((nub_loop_t*) ((uv_stream_t*) handle->data)->data)->data;
 
+  /* Setting up the struct necessary to pass all relevant information to the
+   * spawned thread so it can take care of echoing back the actual request */
   nubuf = (after_write_t*) malloc(sizeof(*nubuf));
   check_error(NULL == nubuf, "allocation error");
 
@@ -174,10 +145,15 @@ static void after_read(uv_stream_t* handle,
   nubuf->nread = nread;
   nubuf->handle = handle;
 
+  /* Here is where the push to the spawned thread is made */
   nub_thread_push(thread, thread_after_read, nubuf);
 }
 
 
+/* The only function that utilizes the multi-threaded capabilitis of libnub.
+ * Made for simplicity in demonstration. All it will do is handle the
+ * incoming request and either close the connection, continue listening or
+ * respond back with the users data. */
 static void thread_after_read(nub_thread_t* thread, void* arg) {
   write_req_t* wr;
   nub_loop_t* loop;
@@ -186,6 +162,7 @@ static void thread_after_read(nub_thread_t* thread, void* arg) {
   uv_stream_t* handle;
   int r;
 
+  /* Unravelling all the different data types */
   loop = thread->nubloop;
   nubuf = (after_write_t*) arg;
   handle = nubuf->handle;
@@ -194,15 +171,18 @@ static void thread_after_read(nub_thread_t* thread, void* arg) {
   /* Error or EOF. Free resources and close connection */
   if (0 > nubuf->nread) {
     free(nubuf->base);
+
+    /* Event loop critical section to close the connection */
     nub_loop_block(thread);
     uv_close((uv_handle_t*)handle, on_close);
     uv_close(server_handle, on_close);
     nub_loop_resume(thread);
+
     free(nubuf);
     return;
   }
 
-  /* Everything OK, but nothing read. */
+  /* Everything OK, but nothing read */
   if (0 == nubuf->nread) {
     free(nubuf->base);
     free(nubuf);
@@ -213,9 +193,11 @@ static void thread_after_read(nub_thread_t* thread, void* arg) {
   check_error(NULL == wr, "allocation error");
   wr->buf = uv_buf_init(nubuf->base, nubuf->nread);
 
+  /* Event loop critical section to echo back read data */
   nub_loop_block(thread);
   r = uv_write(&wr->req, handle, &wr->buf, 1, after_write);
   nub_loop_resume(thread);
+
   check_error(r, "uv_write error");
   free(nubuf);
 }
@@ -237,15 +219,6 @@ static void after_write(uv_write_t* req, int status) {
           uv_err_name(status),
           uv_strerror(status));
 }
-
-
-/* Make sure to cleanup resources after server shuts down */
-/*
-static void after_shutdown(uv_shutdown_t* req, int status) {
-  uv_close((uv_handle_t*) req->handle, on_close);
-  free(req);
-}
-*/
 
 
 /* Also close any open handles */
