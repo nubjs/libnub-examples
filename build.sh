@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# Run:
+#  git clone https://github.com/nubjs/libnub.git nub
+#  cd nub
+#  git submodule init
+#  ./build.sh
+#  cd out
+#  make -j8
+#  BUILDTYPE=Debug make -j8
+
+# This project builds Debug by default, so to build release just run:
+#  BUILDTYPE=Release ./build.sh
+
 CC=$(which clang)
 
 BUILDTYPE=${BUILDTYPE:-Debug}
