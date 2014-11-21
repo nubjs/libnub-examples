@@ -7,10 +7,18 @@
 
 #define PORT 7856
 
+/* Globals */
 typedef struct {
   uv_write_t req;
   uv_buf_t buf;
 } write_req_t;
+
+typedef struct {
+  size_t len;
+  char* base;
+  ssize_t nread;
+  uv_stream_t* handle;
+} after_write_t;
 
 /* Forward declarations */
 static void tcp4_static_echo_server(int port, nub_loop_t* loop);
@@ -19,18 +27,26 @@ static void echo_alloc(uv_handle_t* handle,
                        size_t suggested_size,
                        uv_buf_t* buf);
 static void after_read(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
+static void thread_after_read(nub_thread_t* thread, void* arg);
 static void after_write(uv_write_t* req, int status);
 static void on_close(uv_handle_t* peer);
-static void after_shutdown(uv_shutdown_t* req, int status);
+/*static void after_shutdown(uv_shutdown_t* req, int status);*/
 static void check_error(int r, const char* msg);
 
 
 /* Entry point */
 int main() {
   nub_loop_t loop;
+  nub_thread_t thread;
   int r;
 
   nub_loop_init(&loop);
+  nub_thread_create(&loop, &thread);
+
+  /* Attach thread to loop for future use */
+  /* TODO(trevnorris): Multiple threads may need to be created, so storing the
+   * thread on the loop in this way is not the greatest idea. */
+  loop.data = &thread;
 
   /* Will abort if there are any problems */
   tcp4_static_echo_server(PORT, &loop);
@@ -38,6 +54,7 @@ int main() {
   /* Run the event loop using the libnub wrapper */
   r = nub_loop_run(&loop, UV_RUN_DEFAULT);
 
+  /* Cleanup internally allocated resources */
   nub_loop_dispose(&loop);
 
   return r;
@@ -112,49 +129,95 @@ static void echo_alloc(uv_handle_t* handle,
 static void after_read(uv_stream_t* handle,
                        ssize_t nread,
                        const uv_buf_t* buf) {
+  /*
+  nub_loop_t* loop;
+  nub_thread_t* thread;
+  uv_stream_t* server;
   write_req_t* wr;
-  uv_shutdown_t* sreq;
-  uv_handle_t* server_handle;
-  static int server_closed = 0;
-  int i;
   int r;
 
-  server_handle = (uv_handle_t*) handle->data;
+  server = (uv_stream_t*) handle->data;
+  loop = (nub_loop_t*) server->data;
+  thread = (nub_thread_t*) loop->data;
 
   if (0 > nread) {
-    /* Error or EOF. Free resources and close connection */
-    assert(UV_EOF == nread);
     free(buf->base);
-    sreq = malloc(sizeof(*sreq));
-    r = uv_shutdown(sreq, handle, after_shutdown);
-    check_error(r, "uv_shutdown error");
+    uv_close((uv_handle_t*)handle, on_close);
+    uv_close((uv_handle_t*)server, on_close);
     return;
   }
 
   if (0 == nread) {
-    /* Everything OK, but nothing read. */
     free(buf->base);
+    nub_thread_push(thread, thread_after_read, buf->base);
     return;
   }
 
-  /* Find the letter Q and the server will shutdown */
-  if (!server_closed) {
-    for (i = 0; i < nread; i++) {
-      if (buf->base[i] == 'Q') {
-        free(buf->base);
-        uv_close((uv_handle_t*)handle, on_close);
-        uv_close(server_handle, on_close);
-        return;
-      }
-    }
-  }
-
   wr = (write_req_t*) malloc(sizeof(*wr));
-  assert(NULL != wr);
+  check_error(NULL == wr, "allocation error");
   wr->buf = uv_buf_init(buf->base, nread);
 
   r = uv_write(&wr->req, handle, &wr->buf, 1, after_write);
   check_error(r, "uv_write error");
+  */
+
+  nub_thread_t* thread;
+  after_write_t* nubuf;
+
+  thread = (nub_thread_t*) ((nub_loop_t*) ((uv_stream_t*) handle->data)->data)->data;
+
+  nubuf = (after_write_t*) malloc(sizeof(*nubuf));
+  check_error(NULL == nubuf, "allocation error");
+
+  nubuf->len = buf->len;
+  nubuf->base = buf->base;
+  nubuf->nread = nread;
+  nubuf->handle = handle;
+
+  nub_thread_push(thread, thread_after_read, nubuf);
+}
+
+
+static void thread_after_read(nub_thread_t* thread, void* arg) {
+  write_req_t* wr;
+  nub_loop_t* loop;
+  after_write_t* nubuf;
+  uv_handle_t* server_handle;
+  uv_stream_t* handle;
+  int r;
+
+  loop = thread->nubloop;
+  nubuf = (after_write_t*) arg;
+  handle = nubuf->handle;
+  server_handle = (uv_handle_t*) handle->data;
+
+  /* Error or EOF. Free resources and close connection */
+  if (0 > nubuf->nread) {
+    free(nubuf->base);
+    nub_loop_block(thread);
+    uv_close((uv_handle_t*)handle, on_close);
+    uv_close(server_handle, on_close);
+    nub_loop_resume(thread);
+    free(nubuf);
+    return;
+  }
+
+  /* Everything OK, but nothing read. */
+  if (0 == nubuf->nread) {
+    free(nubuf->base);
+    free(nubuf);
+    return;
+  }
+
+  wr = (write_req_t*) malloc(sizeof(*wr));
+  check_error(NULL == wr, "allocation error");
+  wr->buf = uv_buf_init(nubuf->base, nubuf->nread);
+
+  nub_loop_block(thread);
+  r = uv_write(&wr->req, handle, &wr->buf, 1, after_write);
+  nub_loop_resume(thread);
+  check_error(r, "uv_write error");
+  free(nubuf);
 }
 
 
@@ -177,10 +240,12 @@ static void after_write(uv_write_t* req, int status) {
 
 
 /* Make sure to cleanup resources after server shuts down */
+/*
 static void after_shutdown(uv_shutdown_t* req, int status) {
   uv_close((uv_handle_t*) req->handle, on_close);
   free(req);
 }
+*/
 
 
 /* Also close any open handles */
